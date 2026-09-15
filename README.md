@@ -1,6 +1,6 @@
 # BMW iDrive knob → Teensy 3.1 — handoff
 
-Sketch: `idrive_monitor.ino`. Board: **Teensy 3.2 / 3.1**. USB Type: **Serial** (switch to MIDI or Serial+MIDI when you're ready to control something).
+Sketch: `idrive_monitor.ino`. Board: **Teensy 3.2 / 3.1**. USB Type: **Serial + MIDI** (faders send MIDI CC; Serial keeps the debug console).
 
 ## Wiring
 
@@ -16,6 +16,10 @@ Sketch: `idrive_monitor.ino`. Board: **Teensy 3.2 / 3.1**. USB Type: **Serial** 
 | direction — left | **16** |
 | direction — down | **17** |
 | direction common | **GND** |
+| fader 1 wiper | **22** (A8) |
+| fader 2 wiper | **23** (A9) |
+| fader hot ends (both) | **18** — driven HIGH in `setup()` as a 3.3 V supply, because the real 3.3V pin is taken by the knob |
+| fader ground ends (both) | **AGND** |
 
 Runs at 3.3 V. No external resistors needed.
 
@@ -63,6 +67,16 @@ void onDirection(uint8_t i, bool pressed) {
 
 `i` indexes `DIR_PIN[] = {14, 15, 16, 17}`, which is `DIR_NAME[] = {RIGHT, UP, LEFT, DOWN}`.
 
+### Faders
+
+```cpp
+void onFader(uint8_t i, uint8_t value) {
+  // i is 0..1, value 0..127. Called only when the 7-bit value changes.
+}
+```
+
+Sends absolute CC `FADER_CC[] = {1, 11}` (fader 1 = Modulation, fader 2 = Expression) on `MIDI_CH` 1 for sample-bank select. Change those constants to whatever the receiving software MIDI-learns. `FADER_DEADBAND` (raw counts, now **8** — 5 let the parked faders chatter) kills wiper jitter; `FADER_RAW_LO/HI` clamp the ends so 0 and 127 are always reachable.
+
 ## Calibrating the detent size
 
 `COUNTS_PER_DETENT` is set to **2**, measured on this knob: one detent moves the count by exactly 2.
@@ -80,7 +94,7 @@ The encoder A/B lines are different — those are driven properly by the sensor 
 ## Building from the command line
 
 ```
-arduino-cli compile -b teensy:avr:teensy31:usb=serial ~/Documents/GitHub/idrive-knob/idrive_monitor
+arduino-cli compile -b teensy:avr:teensy31:usb=serialmidi "$HOME/GitHub/idrive-knob/IDRIVE /idrive_monitor"
 ```
 
 Upload without needing a port (the Teensy loader reboots the board itself):

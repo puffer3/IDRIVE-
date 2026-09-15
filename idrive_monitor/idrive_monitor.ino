@@ -2,14 +2,16 @@
  * idrive_monitor — BMW iDrive knob as a monitor controller. Teensy 3.2/3.1.
  *
  * Tools > Board    : Teensy 3.2 / 3.1
- * Tools > USB Type : Serial   (change to MIDI or Serial+MIDI when you wire it
- *                              to whatever you're controlling)
+ * Tools > USB Type : Serial + MIDI   (the faders send MIDI CC; Serial keeps
+ *                                     the debug console)
  *
  * WIRING
  *   encoder V+   -> 3.3V        encoder GND -> GND
  *   encoder A    -> 20          encoder B   -> 21
  *   push         -> 19
  *   direction    -> 14, 15, 16, 17     (their common -> GND)
+ *   fader 1      -> wiper 22, ends 3.3V / GND
+ *   fader 2      -> wiper 23, ends 3.3V / GND
  *
  * The direction switches and the push are read with analogRead against a
  * threshold, not digitalRead. They idle near 2.0 V, which is right on the
@@ -22,6 +24,7 @@
  *     onRotate(int8_t dir)          dir is -1 or +1, one call per detent
  *     onPush(bool pressed)
  *     onDirection(uint8_t i, bool pressed)   i = 0..3, see DIR_NAME
+ *     onFader(uint8_t i, uint8_t value)      i = 0..1, value 0..127
  * ------------------------------------------------------------------
  */
 
@@ -32,6 +35,8 @@ const uint8_t PIN_A    = 20;
 const uint8_t PIN_B    = 21;
 const uint8_t PIN_PUSH = 19;
 const uint8_t DIR_PIN[4] = { 14, 15, 16, 17 };
+const uint8_t FADER_PIN[2] = { 22, 23 };   // A8, A9 -- wipers
+const uint8_t FADER_VCC    = 18;           // driven HIGH = 3.3V supply for the fader hot ends
 
 // Measured on the knob: 14=right, 15=up, 16=left, 17=down.
 const char *DIR_NAME[4] = { "RIGHT", "UP", "LEFT", "DOWN" };
@@ -49,6 +54,21 @@ const int8_t COUNTS_PER_DETENT = 2;
 const int    PRESS_THRESHOLD   = 310;
 
 const uint32_t DEBOUNCE_MS     = 15;
+
+// ---- faders --------------------------------------------------------------
+// Sample-bank select. One absolute CC per fader, 0..127.
+const uint8_t FADER_CC[2]   = { 1, 11 };   // fader 1 = Modulation, fader 2 = Expression
+const uint8_t MIDI_CH       = 1;
+// Set true for a fader that reads backwards (3.3V and GND ends swapped).
+const bool    FADER_FLIP[2] = { false, false };
+// Raw 10-bit counts the wiper must move before a new CC is sent. One MIDI
+// step is 8 counts, so 5 kills jitter without losing any single step.
+const int     FADER_DEADBAND = 8;
+// Raw values at/below and at/above these clamp to 0 and 127, so the ends of
+// travel land reliably on the end values even if the track doesn't quite
+// reach the rails.
+const int     FADER_RAW_LO  = 8;
+const int     FADER_RAW_HI  = 1015;
 
 // ==========================================================================
 //  HOOKS — put your monitor-control logic here
@@ -77,6 +97,13 @@ void onDirection(uint8_t i, bool pressed) {
   // if (pressed) usbMIDI.sendControlChange(30 + i, 127, 1);
 }
 
+void onFader(uint8_t i, uint8_t value) {
+  Serial.print("FADER "); Serial.print(i + 1);
+  Serial.print(" = ");    Serial.println(value);
+
+  usbMIDI.sendControlChange(FADER_CC[i], value, MIDI_CH);
+}
+
 // ==========================================================================
 //  Everything below is plumbing
 // ==========================================================================
@@ -103,8 +130,32 @@ int8_t updateBtn(uint8_t i) {
   return -1;
 }
 
+// ---- faders: raw 10-bit -> 7-bit with deadband ----
+int     faderRaw[2]  = { -1000, -1000 };   // last raw value that produced a send
+uint8_t faderVal[2]  = { 255, 255 };       // last 7-bit value sent
+
+uint8_t faderTo7(int raw) {
+  if (raw <= FADER_RAW_LO) return 0;
+  if (raw >= FADER_RAW_HI) return 127;
+  return (uint8_t)(((long)(raw - FADER_RAW_LO) * 127) / (FADER_RAW_HI - FADER_RAW_LO));
+}
+
+void updateFader(uint8_t i) {
+  int raw = analogRead(FADER_PIN[i]);
+  if (FADER_FLIP[i]) raw = 1023 - raw;
+  if (abs(raw - faderRaw[i]) < FADER_DEADBAND) return;
+  uint8_t v = faderTo7(raw);
+  faderRaw[i] = raw;
+  if (v == faderVal[i]) return;
+  faderVal[i] = v;
+  onFader(i, v);
+}
+
 void setup() {
   Serial.begin(115200);
+
+  pinMode(FADER_VCC, OUTPUT);
+  digitalWrite(FADER_VCC, HIGH);   // faders are fed from pin 18, not the 3.3V pin
 
   // Do NOT call pinMode on PIN_A / PIN_B. The Encoder object is constructed
   // before setup() runs and configures those pins itself; overriding them
@@ -117,6 +168,8 @@ void setup() {
     btnChanged[i] = 0;
     pinMode(btnPin[i], INPUT_PULLUP);
   }
+  // Faders are driven by the pot itself -- no pull-up, or it skews the wiper.
+  for (uint8_t i = 0; i < 2; i++) pinMode(FADER_PIN[i], INPUT);
 
   analogReadResolution(10);
   analogReadAveraging(8);
@@ -134,6 +187,8 @@ void showRaw() {
   Serial.print("  push=");  Serial.print(analogRead(PIN_PUSH));
   Serial.print("  dirs=");
   for (uint8_t i = 0; i < 4; i++) { Serial.print(analogRead(DIR_PIN[i])); Serial.print(' '); }
+  Serial.print(" faders=");
+  for (uint8_t i = 0; i < 2; i++) { Serial.print(analogRead(FADER_PIN[i])); Serial.print(' '); }
   Serial.println();
 }
 
@@ -151,6 +206,12 @@ void loop() {
     ev = updateBtn(i + 1);
     if (ev >= 0) onDirection(i, ev == 1);
   }
+
+  // --- faders ---
+  for (uint8_t i = 0; i < 2; i++) updateFader(i);
+
+  // Drain incoming MIDI so the host-side buffer never fills.
+  while (usbMIDI.read()) {}
 
   // --- console helpers ---
   if (Serial.available()) {
