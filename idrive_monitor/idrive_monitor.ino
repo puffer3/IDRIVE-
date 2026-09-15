@@ -57,6 +57,11 @@ const uint32_t DEBOUNCE_MS     = 15;
 
 // ---- faders --------------------------------------------------------------
 // Sample-bank select. One absolute CC per fader, 0..127.
+// Apollo monitor-control map (matches ~/Downloads/config.json):
+//   knob turn = CC16 relative; buttons 17 mute, 18 dim, 19 alt, 20 mono, 21 console
+const uint8_t ROTATE_CC     = 16;          // knob turn, relative (65 up / 63 down)
+const uint8_t PUSH_CC       = 17;          // knob press = mute
+const uint8_t DIR_CC_MAP[4] = { 20, 18, 19, 21 };   // indexed like DIR_PIN: RIGHT=mono, UP=dim, LEFT=alt, DOWN=console
 const uint8_t FADER_CC[2]   = { 1, 11 };   // fader 1 = Modulation, fader 2 = Expression
 const uint8_t MIDI_CH       = 1;
 // Set true for a fader that reads backwards (3.3V and GND ends swapped).
@@ -78,23 +83,21 @@ void onRotate(int8_t dir) {
   Serial.print("ROTATE ");
   Serial.println(dir > 0 ? "CW" : "CCW");
 
-  // Volume as a relative MIDI CC (needs USB Type = MIDI or Serial+MIDI):
-  // usbMIDI.sendControlChange(7, dir > 0 ? 65 : 63, 1);
+  // Relative CC: 65 = one click up, 63 = one click down.
+  usbMIDI.sendControlChange(ROTATE_CC, dir > 0 ? 65 : 63, MIDI_CH);
 }
 
 void onPush(bool pressed) {
   Serial.println(pressed ? "PUSH  pressed" : "PUSH  released");
 
-  // Mute toggle on press:
-  // if (pressed) usbMIDI.sendControlChange(20, 127, 1);
+  usbMIDI.sendControlChange(PUSH_CC, pressed ? 127 : 0, MIDI_CH);
 }
 
 void onDirection(uint8_t i, bool pressed) {
   Serial.print(DIR_NAME[i]);
   Serial.println(pressed ? "  pressed" : "  released");
 
-  // Source select, one CC per direction:
-  // if (pressed) usbMIDI.sendControlChange(30 + i, 127, 1);
+  usbMIDI.sendControlChange(DIR_CC_MAP[i], pressed ? 127 : 0, MIDI_CH);
 }
 
 void onFader(uint8_t i, uint8_t value) {
